@@ -1,0 +1,21 @@
+# Build and runtime artifacts
+.cache/
+build/
+*.app/
+*.o
+*.pcm
+*.swiftdoc
+*.swiftmodule
+*.dSYM/
+main
+test
+test.swift
+
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.Spotlight-V100
+.Trashes
