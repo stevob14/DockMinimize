@@ -1,5 +1,7 @@
 # DockMinimize
 
+[![Listed on BuiltByVibe](https://builtbyvibe.dev/api/badge/dockminimize-ssns.svg)](https://builtbyvibe.dev/project/dockminimize-ssns)
+
 A lightweight, simple native macOS utility that adds Windows/Linux-style **"Click Dock Icon to Minimize and Restore"** functionality to macOS.
 
 ---
