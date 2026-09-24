@@ -11,7 +11,7 @@ final class DockMonitor {
     private var mouseDownTime: CFTimeInterval = 0
     private var frontAppAtDown: NSRunningApplication?
     private var hadVisibleWindowsAtDown: Bool = false
-    private var lastMinimizeTime: CFTimeInterval = 0
+    private var lastActionTime: CFTimeInterval = 0
     
     private(set) var isRunning: Bool = false
     
@@ -77,8 +77,8 @@ final class DockMonitor {
             mouseDownPoint = point
             mouseDownTime = now
             
-            // Debounce: if we recently minimized (within 0.4s), ignore to avoid immediate re-trigger
-            if now - lastMinimizeTime < 0.4 {
+            // Debounce: if we recently triggered an action (within 0.4s), ignore
+            if now - lastActionTime < 0.4 {
                 frontAppAtDown = nil
                 hadVisibleWindowsAtDown = false
                 return Unmanaged.passUnretained(event)
@@ -96,11 +96,13 @@ final class DockMonitor {
             let elapsed = now - mouseDownTime
             let dist = hypot(point.x - mouseDownPoint.x, point.y - mouseDownPoint.y)
             
-            // Only minimize if it was a clean click AND the app had visible windows BEFORE the click started
-            if dist < 8.0 && elapsed < 0.6 && hadVisibleWindowsAtDown, let app = frontAppAtDown {
+            if dist < 8.0 && elapsed < 0.6 {
                 let clickPoint = point
+                let frontAtDown = frontAppAtDown
+                let hadVisible = hadVisibleWindowsAtDown
+                
                 DispatchQueue.global(qos: .userInteractive).async { [weak self] in
-                    self?.checkAndMinimize(at: clickPoint, targetApp: app)
+                    self?.handleDockClick(at: clickPoint, frontAppAtDown: frontAtDown, hadVisibleAtDown: hadVisible)
                 }
             }
             
@@ -112,7 +114,7 @@ final class DockMonitor {
         return Unmanaged.passUnretained(event)
     }
     
-    private func checkAndMinimize(at point: CGPoint, targetApp: NSRunningApplication) {
+    private func handleDockClick(at point: CGPoint, frontAppAtDown: NSRunningApplication?, hadVisibleAtDown: Bool) {
         let systemWide = AXUIElementCreateSystemWide()
         var hitRef: AXUIElement?
         guard AXUIElementCopyElementAtPosition(systemWide, Float(point.x), Float(point.y), &hitRef) == .success,
@@ -160,26 +162,43 @@ final class DockMonitor {
             return nil
         }()
         
-        var isMatch = false
-        if let dockBundleId = itemURL.flatMap({ Bundle(url: $0)?.bundleIdentifier }),
-           dockBundleId == targetApp.bundleIdentifier {
-            isMatch = true
-        } else if let itemURL = itemURL, let appURL = targetApp.bundleURL,
-                  itemURL.standardizedFileURL.resolvingSymlinksInPath().path == appURL.standardizedFileURL.resolvingSymlinksInPath().path {
-            isMatch = true
-        } else if let title = title, !title.isEmpty {
-            if targetApp.localizedName?.localizedCaseInsensitiveCompare(title) == .orderedSame ||
-               targetApp.bundleURL?.deletingPathExtension().lastPathComponent.localizedCaseInsensitiveCompare(title) == .orderedSame {
-                isMatch = true
+        let runningApps = NSWorkspace.shared.runningApplications
+        guard let matchedApp = runningApps.first(where: { app in
+            if let dockBundleId = itemURL.flatMap({ Bundle(url: $0)?.bundleIdentifier }),
+               dockBundleId == app.bundleIdentifier {
+                return true
             }
-        }
+            if let itemURL = itemURL, let appURL = app.bundleURL,
+               itemURL.standardizedFileURL.resolvingSymlinksInPath().path == appURL.standardizedFileURL.resolvingSymlinksInPath().path {
+                return true
+            }
+            if let title = title, !title.isEmpty {
+                if app.localizedName?.localizedCaseInsensitiveCompare(title) == .orderedSame ||
+                   app.bundleURL?.deletingPathExtension().lastPathComponent.localizedCaseInsensitiveCompare(title) == .orderedSame {
+                    return true
+                }
+            }
+            return false
+        }) else { return }
         
-        guard isMatch else { return }
+        let wasFrontmostAtDown = (frontAppAtDown?.processIdentifier == matchedApp.processIdentifier)
         
-        // Record minimize time and execute minimize with native animation
-        lastMinimizeTime = CACurrentMediaTime()
-        DispatchQueue.main.async {
-            WindowManager.shared.minimizeWindows(for: targetApp)
+        if wasFrontmostAtDown && hadVisibleAtDown {
+            // Case 1: Was frontmost and had visible windows -> MINIMIZE ALL
+            lastActionTime = CACurrentMediaTime()
+            DispatchQueue.main.async {
+                WindowManager.shared.minimizeWindows(for: matchedApp)
+            }
+        } else {
+            // Case 2: Clicked to restore / bring to front
+            // If the app has minimized windows, restore ALL of them together
+            let minimized = WindowManager.shared.getMinimizedWindows(for: matchedApp)
+            if !minimized.isEmpty {
+                lastActionTime = CACurrentMediaTime()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    WindowManager.shared.restoreMinimizedWindows(for: matchedApp)
+                }
+            }
         }
     }
 }

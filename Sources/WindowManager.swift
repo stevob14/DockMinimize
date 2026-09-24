@@ -6,8 +6,8 @@ final class WindowManager {
     
     private init() {}
     
-    /// Returns all visible (non-minimized) standard document/app windows for the application.
-    func getVisibleWindows(for app: NSRunningApplication) -> [AXUIElement] {
+    /// Returns all standard document/app windows for the application.
+    func getAllStandardWindows(for app: NSRunningApplication) -> [AXUIElement] {
         let appElem = AXUIElementCreateApplication(app.processIdentifier)
         var windowsRef: AnyObject?
         guard AXUIElementCopyAttributeValue(appElem, kAXWindowsAttribute as CFString, &windowsRef) == .success,
@@ -16,13 +16,6 @@ final class WindowManager {
         }
         
         return windows.filter { win in
-            // Check if already minimized
-            var minRef: AnyObject?
-            AXUIElementCopyAttributeValue(win, kAXMinimizedAttribute as CFString, &minRef)
-            let isMin = (minRef as? Bool) ?? false
-            if isMin { return false }
-            
-            // Filter out desktop, system panels, etc.
             var subRef: AnyObject?
             AXUIElementCopyAttributeValue(win, kAXSubroleAttribute as CFString, &subRef)
             let subrole = subRef as? String
@@ -34,6 +27,26 @@ final class WindowManager {
         }
     }
     
+    /// Returns all visible (non-minimized) standard windows.
+    func getVisibleWindows(for app: NSRunningApplication) -> [AXUIElement] {
+        return getAllStandardWindows(for: app).filter { win in
+            var minRef: AnyObject?
+            AXUIElementCopyAttributeValue(win, kAXMinimizedAttribute as CFString, &minRef)
+            let isMin = (minRef as? Bool) ?? false
+            return !isMin
+        }
+    }
+    
+    /// Returns all minimized standard windows.
+    func getMinimizedWindows(for app: NSRunningApplication) -> [AXUIElement] {
+        return getAllStandardWindows(for: app).filter { win in
+            var minRef: AnyObject?
+            AXUIElementCopyAttributeValue(win, kAXMinimizedAttribute as CFString, &minRef)
+            let isMin = (minRef as? Bool) ?? false
+            return isMin
+        }
+    }
+    
     /// Minimizes all visible standard windows of the application with native animation.
     func minimizeWindows(for app: NSRunningApplication) {
         let visibleWindows = getVisibleWindows(for: app)
@@ -42,5 +55,17 @@ final class WindowManager {
         for win in visibleWindows {
             AXUIElementSetAttributeValue(win, kAXMinimizedAttribute as CFString, kCFBooleanTrue)
         }
+    }
+    
+    /// Restores (unminimizes) all minimized standard windows of the application.
+    func restoreMinimizedWindows(for app: NSRunningApplication) {
+        let minimized = getMinimizedWindows(for: app)
+        guard !minimized.isEmpty else { return }
+        
+        for win in minimized {
+            AXUIElementSetAttributeValue(win, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+            AXUIElementPerformAction(win, kAXRaiseAction as CFString)
+        }
+        app.activate(options: [.activateAllWindows])
     }
 }
