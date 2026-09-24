@@ -142,61 +142,75 @@ final class DockMonitor {
         }
         guard let dockItem = item else { return }
         
-        // Ensure it's an application icon
+        // Ensure it's an application icon or the Trash icon
         var subrole: AnyObject?
         AXUIElementCopyAttributeValue(dockItem, kAXSubroleAttribute as CFString, &subrole)
-        guard (subrole as? String) == "AXApplicationDockItem" else { return }
+        let subroleStr = subrole as? String
+        guard subroleStr == "AXApplicationDockItem" || subroleStr == "AXTrashDockItem" else { return }
         
-        // Verify this dock item matches targetApp
+        // Verify title
         var titleRef: AnyObject?
         AXUIElementCopyAttributeValue(dockItem, kAXTitleAttribute as CFString, &titleRef)
         let title = titleRef as? String
         
-        var urlRef: AnyObject?
-        AXUIElementCopyAttributeValue(dockItem, "AXURL" as CFString, &urlRef)
-        let itemURL: URL? = {
-            if let cf = urlRef {
-                if CFGetTypeID(cf) == CFURLGetTypeID() { return (cf as! URL) }
-                if let s = cf as? String { return URL(string: s) }
-            }
-            return nil
-        }()
+        let isTrash = (subroleStr == "AXTrashDockItem")
+        let targetApp: NSRunningApplication?
+        let windowTitleFilter: String?
         
-        let runningApps = NSWorkspace.shared.runningApplications
-        guard let matchedApp = runningApps.first(where: { app in
-            if let dockBundleId = itemURL.flatMap({ Bundle(url: $0)?.bundleIdentifier }),
-               dockBundleId == app.bundleIdentifier {
-                return true
-            }
-            if let itemURL = itemURL, let appURL = app.bundleURL,
-               itemURL.standardizedFileURL.resolvingSymlinksInPath().path == appURL.standardizedFileURL.resolvingSymlinksInPath().path {
-                return true
-            }
-            if let title = title, !title.isEmpty {
-                if app.localizedName?.localizedCaseInsensitiveCompare(title) == .orderedSame ||
-                   app.bundleURL?.deletingPathExtension().lastPathComponent.localizedCaseInsensitiveCompare(title) == .orderedSame {
+        if isTrash {
+            // Trash is owned by Finder
+            targetApp = NSWorkspace.shared.runningApplications.first { $0.bundleIdentifier == "com.apple.finder" }
+            windowTitleFilter = title // Matches the Trash window title (e.g. "Trash", "Bin")
+        } else {
+            windowTitleFilter = nil
+            var urlRef: AnyObject?
+            AXUIElementCopyAttributeValue(dockItem, "AXURL" as CFString, &urlRef)
+            let itemURL: URL? = {
+                if let cf = urlRef {
+                    if CFGetTypeID(cf) == CFURLGetTypeID() { return (cf as! URL) }
+                    if let s = cf as? String { return URL(string: s) }
+                }
+                return nil
+            }()
+            
+            let runningApps = NSWorkspace.shared.runningApplications
+            targetApp = runningApps.first(where: { app in
+                if let dockBundleId = itemURL.flatMap({ Bundle(url: $0)?.bundleIdentifier }),
+                   dockBundleId == app.bundleIdentifier {
                     return true
                 }
-            }
-            return false
-        }) else { return }
+                if let itemURL = itemURL, let appURL = app.bundleURL,
+                   itemURL.standardizedFileURL.resolvingSymlinksInPath().path == appURL.standardizedFileURL.resolvingSymlinksInPath().path {
+                    return true
+                }
+                if let title = title, !title.isEmpty {
+                    if app.localizedName?.localizedCaseInsensitiveCompare(title) == .orderedSame ||
+                       app.bundleURL?.deletingPathExtension().lastPathComponent.localizedCaseInsensitiveCompare(title) == .orderedSame {
+                        return true
+                    }
+                }
+                return false
+            })
+        }
+        
+        guard let matchedApp = targetApp else { return }
         
         let wasFrontmostAtDown = (frontAppAtDown?.processIdentifier == matchedApp.processIdentifier)
         
         if wasFrontmostAtDown && hadVisibleAtDown {
-            // Case 1: Was frontmost and had visible windows -> MINIMIZE ALL
+            // Case 1: Was frontmost and had visible windows -> MINIMIZE
             lastActionTime = CACurrentMediaTime()
             DispatchQueue.main.async {
-                WindowManager.shared.minimizeWindows(for: matchedApp)
+                WindowManager.shared.minimizeWindows(for: matchedApp, withTitle: windowTitleFilter)
             }
         } else {
             // Case 2: Clicked to restore / bring to front
-            // If the app has minimized windows, restore ALL of them together
-            let minimized = WindowManager.shared.getMinimizedWindows(for: matchedApp)
+            // If the app has minimized windows (or minimized Trash), restore them
+            let minimized = WindowManager.shared.getMinimizedWindows(for: matchedApp, withTitle: windowTitleFilter)
             if !minimized.isEmpty {
                 lastActionTime = CACurrentMediaTime()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                    WindowManager.shared.restoreMinimizedWindows(for: matchedApp)
+                    WindowManager.shared.restoreMinimizedWindows(for: matchedApp, withTitle: windowTitleFilter)
                 }
             }
         }
